@@ -66,12 +66,15 @@ def build_common_args(args):
         "--e_dim", str(args.e_dim),
         "--quant_loss_weight", str(args.quant_loss_weight),
         "--beta", str(args.beta),
-        "--save_limit", str(args.save_limit),
     ]
     common_args.extend(["--sk_epsilons", *[str(x) for x in args.sk_epsilons]])
     common_args.extend(["--num_emb_list", *[str(x) for x in args.num_emb_list]])
     common_args.extend(["--layers", *[str(x) for x in args.layers]])
     return common_args
+
+
+def build_train_only_args(args):
+    return ["--save_limit", str(args.save_limit)]
 
 
 def main():
@@ -92,6 +95,7 @@ def main():
         "--ckpt_dir", args.ckpt_dir,
     ]
     train_cmd.extend(build_common_args(args))
+    train_cmd.extend(build_train_only_args(args))
 
     export_cmd = [
         python_exe,
