@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.nn.init import xavier_normal_
-from sklearn.cluster import KMeans
 
 
 class MLPLayers(nn.Module):
@@ -71,6 +70,8 @@ def kmeans(
     num_clusters,
     num_iters = 10,
 ):
+    from sklearn.cluster import KMeans
+
     B, dim, dtype, device = samples.shape[0], samples.shape[-1], samples.dtype, samples.device
     x = samples.cpu().detach().numpy()
 

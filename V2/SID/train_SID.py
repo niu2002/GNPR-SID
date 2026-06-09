@@ -1,17 +1,28 @@
 import argparse
-import random
-import torch
-import numpy as np
-from time import time
 import logging
+import random
 
+import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
-from POIdatasets import EmbDataset
 from CRQVAE.crqvae import CRQVAE
-from SID_trainer import  Trainer
+from POIdatasets import EmbDataset
+from SID_trainer import Trainer
 
-def parse_args(datafold):
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in {"true", "1", "yes", "y"}:
+        return True
+    if value in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
+
+def parse_args():
     parser = argparse.ArgumentParser(description="Index")
 
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
@@ -26,16 +37,16 @@ def parse_args(datafold):
 
     parser.add_argument("--weight_decay", type=float, default=1e-4, help='l2 regularization weight')
     parser.add_argument("--dropout_prob", type=float, default=0.1, help="dropout ratio")
-    parser.add_argument("--bn", type=bool, default=True, help="use bn or not")
+    parser.add_argument("--bn", type=str2bool, default=True, help="use bn or not")
     parser.add_argument("--loss_type", type=str, default="mse", help="loss_type")
-    parser.add_argument("--kmeans_init", type=bool, default=True, help="use kmeans_init or not")
+    parser.add_argument("--kmeans_init", type=str2bool, default=True, help="use kmeans_init or not")
     parser.add_argument("--kmeans_iters", type=int, default=100, help="max kmeans iters")
-    parser.add_argument('--use_sk', type=bool, default=False, help="use sinkhorn or not")
+    parser.add_argument('--use_sk', type=str2bool, default=False, help="use sinkhorn or not")
     parser.add_argument('--sk_epsilons', type=float, nargs='+', default=[0.1, 0.1, 0.1], help="sinkhorn epsilons")
     parser.add_argument("--sk_iters", type=int, default=50, help="max sinkhorn iters")
     parser.add_argument("--use-linear", type=int, default=1, help="use-linear")
 
-    parser.add_argument("--device", type=str, default="cuda:0", help="gpu or cpu")
+    parser.add_argument("--device", type=str, default="cpu", help="gpu or cpu")
 
     parser.add_argument('--num_emb_list', type=int, nargs='+', default=[64,64,64], help='emb num of every vq')
     parser.add_argument('--e_dim', type=int, default=64, help='vq codebook embedding size')
@@ -49,17 +60,19 @@ def parse_args(datafold):
     return parser.parse_args()
 
 
-if __name__ == '__main__':
-    """fix the random seed"""
-    seed = 2024
+def set_seed(seed: int = 2024):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    datafold = "CA"
-    args = parse_args(datafold)
+
+
+if __name__ == '__main__':
+    set_seed(2024)
+    args = parse_args()
     print("=================================================")
     print(args)
     print("=================================================")
@@ -85,9 +98,14 @@ if __name__ == '__main__':
                    use_linear=args.use_linear,
                   )
     print(model)
-    data_loader = DataLoader(data,num_workers=args.num_workers,
-                             batch_size=args.batch_size, shuffle=True,
-                             pin_memory=True)
+    pin_memory = str(args.device).startswith("cuda")
+    data_loader = DataLoader(
+        data,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size,
+        shuffle=True,
+        pin_memory=pin_memory,
+    )
     trainer = Trainer(args, model, len(data_loader))
     best_loss, best_collision_rate = trainer.fit(data_loader)
 
