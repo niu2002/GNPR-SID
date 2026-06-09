@@ -3,16 +3,12 @@ import os
 import random
 
 
-def format_fn(batch):
-    out = []
-    for ins, inp, resp in zip(batch["instruction"], batch["input"], batch["output"]):
-        text = (
-            f"### Instruction:\n{ins.strip()}\n\n"
-            f"### Input:\n{inp.strip()}\n\n"
-            f"### Response:\n{resp.strip()}<|eot_id|>"
-        )
-        out.append(text)
-    return out
+def build_prompt(instruction, user_input):
+    return (
+        f"### Instruction:\n{instruction.strip()}\n\n"
+        f"### Input:\n{user_input.strip()}\n\n"
+        f"### Response:\n"
+    )
 
 
 def parse_args():
@@ -45,14 +41,28 @@ def train(args):
     import torch
     from datasets import load_dataset
     from peft import LoraConfig, get_peft_model
-    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
-    from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from trl import SFTConfig, SFTTrainer
 
     random.seed(args.seed)
     os.environ["WANDB_PROJECT"] = args.wandb_project
 
     train_data = load_dataset("json", data_files=args.train_dataset)["train"]
     val_data = load_dataset("json", data_files=args.valid_dataset)["train"]
+    train_data = train_data.map(
+        lambda example: {
+            "prompt": build_prompt(example["instruction"], example["input"]),
+            "completion": example["output"].strip() + "<|eot_id|>",
+        },
+        remove_columns=train_data.column_names,
+    )
+    val_data = val_data.map(
+        lambda example: {
+            "prompt": build_prompt(example["instruction"], example["input"]),
+            "completion": example["output"].strip() + "<|eot_id|>",
+        },
+        remove_columns=val_data.column_names,
+    )
 
     print("Example data sample:")
     print(train_data[0])
@@ -84,13 +94,7 @@ def train(args):
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
 
-    collator = DataCollatorForCompletionOnlyLM(
-        response_template="### Response:\n",
-        tokenizer=tokenizer,
-        mlm=False,
-    )
-
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
@@ -106,6 +110,8 @@ def train(args):
         fp16=(args.torch_dtype == "float16"),
         run_name=args.wandb_name,
         report_to=args.report_to,
+        max_length=args.cutoff_len,
+        completion_only_loss=True,
     )
 
     trainer = SFTTrainer(
@@ -114,15 +120,12 @@ def train(args):
         eval_dataset=val_data,
         args=training_args,
         tokenizer=tokenizer,
-        formatting_func=format_fn,
-        max_seq_length=args.cutoff_len,
-        data_collator=collator,
     )
 
-    example = format_fn(train_data[:1])
+    example = train_data[0]["prompt"] + train_data[0]["completion"]
     print("Example formatted prompt:")
-    print(example[0][:500] + "...")
-    input_ids = tokenizer(example[0], return_tensors="pt")["input_ids"]
+    print(example[:500] + "...")
+    input_ids = tokenizer(example, return_tensors="pt")["input_ids"]
     print("Tokenized length:", input_ids.shape[1])
 
     trainer.train()
