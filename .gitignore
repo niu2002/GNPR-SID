@@ -1,0 +1,11 @@
+.idea/
+
+# Large raw datasets downloaded for local/server preprocessing
+V2/dataprocess/LLM4POI_data/ca/
+V2/dataprocess/LLM4POI_data/nyc/
+V2/dataprocess/LLM4POI_data/tky/
+V2/dataprocess/LLM4POI_data/datasets/
+V2/dataprocess/LLM4POI_data/datasets.zip
+
+# macOS archive metadata
+.DS_Store
