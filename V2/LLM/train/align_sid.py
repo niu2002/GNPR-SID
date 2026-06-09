@@ -1,22 +1,11 @@
+import argparse
 import os
-import re
-import json
-import fire
-import torch
-import wandb
-
-from datasets import load_dataset
-
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+import random
 
 
 def format_fn(batch):
     out = []
-    for ins, inp, resp in zip(
-        batch["instruction"], batch["input"], batch["output"]
-    ):
+    for ins, inp, resp in zip(batch["instruction"], batch["input"], batch["output"]):
         text = (
             f"### Instruction:\n{ins.strip()}\n\n"
             f"### Input:\n{inp.strip()}\n\n"
@@ -25,102 +14,98 @@ def format_fn(batch):
         out.append(text)
     return out
 
-def format_llama3(batch):
-    instructions = batch.get("instruction", [])
-    inputs = batch.get("input", [""] * len(instructions))
-    outputs = batch.get("output", [""] * len(instructions))
-    
-    texts = []
-    for ins, inp, out in zip(instructions, inputs, outputs):
-        text = (
-            "<|begin_of_text|>"
-            "<|start_header_id|>system<|end_header_id|>\n\n"
-            f"{ins}<|eot_id|>"
-            "<|start_header_id|>user<|end_header_id|>\n\n"
-            f"{inp}<|eot_id|>"
-            "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            f"{out}<|eot_id|>"
-        )
-        texts.append(text)
-    return texts
 
-def train(
-    base_model=None,
-    train_dataset=None,
-    valid_dataset=None,
-    output_dir=None,
-    batch_size=16,
-    num_train_epochs=3,
-    learning_rate=2e-5,
-    grad_accum=2,
-    cutoff_len=1024,
-    seed=42,
-    wandb_project="CA_train_sid_mapping",
-    wandb_name="sid_mapping"
-):
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train SID-to-LLM alignment adapter for GNPR-SID V2.")
+    parser.add_argument("--base-model", required=True, help="Base model path or HF/modelscope identifier")
+    parser.add_argument("--train-dataset", required=True, help="Path to train_align.json")
+    parser.add_argument("--valid-dataset", required=True, help="Path to valid_align.json")
+    parser.add_argument("--output-dir", required=True, help="Output directory")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--num-train-epochs", type=int, default=6)
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--grad-accum", type=int, default=2)
+    parser.add_argument("--cutoff-len", type=int, default=1024)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--wandb-project", default="sid_alignment")
+    parser.add_argument("--wandb-name", default="sid_mapping")
+    parser.add_argument("--report-to", default="none", help="Training report target, e.g. none or wandb")
+    parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "bfloat16", "float16", "float32"])
+    parser.add_argument("--local-files-only", action="store_true", help="Only load local model/tokenizer files")
+    return parser.parse_args()
 
-    os.environ["WANDB_PROJECT"] = wandb_project
-    
-    train_data = load_dataset("json", data_files=train_dataset)["train"]
-    val_data = load_dataset("json", data_files=valid_dataset)["train"]
+
+def resolve_torch_dtype(torch_module, dtype_name):
+    if dtype_name == "auto":
+        return "auto"
+    return getattr(torch_module, dtype_name)
+
+
+def train(args):
+    import torch
+    from datasets import load_dataset
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+    from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
+
+    random.seed(args.seed)
+    os.environ["WANDB_PROJECT"] = args.wandb_project
+
+    train_data = load_dataset("json", data_files=args.train_dataset)["train"]
+    val_data = load_dataset("json", data_files=args.valid_dataset)["train"]
 
     print("Example data sample:")
     print(train_data[0])
 
     model = AutoModelForCausalLM.from_pretrained(
-        base_model, 
-        torch_dtype=torch.bfloat16,
-        # device_map="auto"
+        args.base_model,
+        torch_dtype=resolve_torch_dtype(torch, args.torch_dtype),
+        local_files_only=args.local_files_only,
     )
     model.gradient_checkpointing_enable()
 
-    # =========== tokenizer ===========
-    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
-
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.base_model,
+        trust_remote_code=True,
+        local_files_only=args.local_files_only,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    # =========== LoRA ===========
     lora_cfg = LoraConfig(
         r=16,
         lora_alpha=32,
         target_modules=["embed_tokens"],
-        # target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens"],
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
         bias="none",
     )
     model = get_peft_model(model, lora_cfg)
-
     model.print_trainable_parameters()
 
-    # =========== DataCollator ===========
-    response_template = "### Response:\n"
-    # response_template = "<|start_header_id|>assistant<|end_header_id|>\n\n"
     collator = DataCollatorForCompletionOnlyLM(
-        response_template=response_template,
+        response_template="### Response:\n",
         tokenizer=tokenizer,
-        mlm=False
+        mlm=False,
     )
 
-    # =========== SFT config ===========
     training_args = TrainingArguments(
-        output_dir=output_dir,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        gradient_accumulation_steps=grad_accum,
-        num_train_epochs=num_train_epochs,
-        learning_rate=learning_rate,
+        output_dir=args.output_dir,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        num_train_epochs=args.num_train_epochs,
+        learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=50,
         save_steps=100,
         logging_steps=5,
         warmup_steps=180,
-        bf16=True,        
-        # deepspeed="",
-        run_name=wandb_name,
-        report_to="wandb",
+        bf16=(args.torch_dtype == "bfloat16"),
+        fp16=(args.torch_dtype == "float16"),
+        run_name=args.wandb_name,
+        report_to=args.report_to,
     )
 
     trainer = SFTTrainer(
@@ -130,41 +115,20 @@ def train(
         args=training_args,
         tokenizer=tokenizer,
         formatting_func=format_fn,
-        max_seq_length=cutoff_len,
+        max_seq_length=args.cutoff_len,
         data_collator=collator,
     )
 
     example = format_fn(train_data[:1])
     print("Example formatted prompt:")
     print(example[0][:500] + "...")
-
     input_ids = tokenizer(example[0], return_tensors="pt")["input_ids"]
     print("Tokenized length:", input_ids.shape[1])
-    print("Last 20 tokens:", tokenizer.convert_ids_to_tokens(input_ids[0][-20:]))
-
 
     trainer.train()
-    trainer.save_model(output_dir)
-
+    trainer.save_model(args.output_dir)
     print("Training finished!")
 
-if __name__ == "__main__":
-    datafold = ""
-    path = f""
-    sidfold = ""
-    model = ""
 
-    train(
-        base_model=f"",
-        train_dataset=f"",
-        valid_dataset=f"",
-        output_dir=f"",
-        batch_size=16,          
-        num_train_epochs=6,
-        learning_rate=2e-5,
-        grad_accum=2,
-        cutoff_len=1024,
-        seed=42,
-        wandb_project=f"",
-        wandb_name=f"",     
-    )
+if __name__ == "__main__":
+    train(parse_args())
