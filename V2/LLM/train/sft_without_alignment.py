@@ -116,7 +116,7 @@ def train(args):
         train_dataset=train_data,
         eval_dataset=val_data,
         args=training_args,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     trainer.train()
