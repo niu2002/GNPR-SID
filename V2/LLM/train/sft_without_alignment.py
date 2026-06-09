@@ -3,6 +3,19 @@ import os
 import random
 
 
+DEFAULT_TARGET_MODULES = ",".join(
+    [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
+)
+
+
 def build_prompt(instruction, user_input):
     return (
         f"### Instruction:\n{instruction.strip()}\n\n"
@@ -28,6 +41,11 @@ def parse_args():
     parser.add_argument("--report-to", default="none", help="Training report target, e.g. none or wandb")
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "bfloat16", "float16", "float32"])
     parser.add_argument("--local-files-only", action="store_true", help="Only load local model/tokenizer files")
+    parser.add_argument(
+        "--target-modules",
+        default=DEFAULT_TARGET_MODULES,
+        help="Comma-separated LoRA target modules",
+    )
     return parser.parse_args()
 
 
@@ -35,6 +53,10 @@ def resolve_torch_dtype(torch_module, dtype_name):
     if dtype_name == "auto":
         return "auto"
     return getattr(torch_module, dtype_name)
+
+
+def parse_target_modules(raw_value):
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
 def train(args):
@@ -83,7 +105,7 @@ def train(args):
     lora_cfg = LoraConfig(
         r=16,
         lora_alpha=32,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj"],
+        target_modules=parse_target_modules(args.target_modules),
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
         bias="none",
