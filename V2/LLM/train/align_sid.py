@@ -3,13 +3,27 @@ import os
 import random
 
 
+DEFAULT_TARGET_MODULES = ",".join(
+    [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
+)
+
+
 def build_prompt(instruction, user_input, strict_sid_output=False):
     if strict_sid_output:
         instruction = (
             instruction.strip()
-            + " Only output the semantic code in the format "
-            + "<a_x><b_y><c_z> or <a_x><b_y><c_z><d_w>. "
-            + "Do not explain. Do not output extra text."
+            + " Output exactly one semantic code and nothing else. "
+            + "Use only the format <a_x><b_y><c_z> or <a_x><b_y><c_z><d_w>. "
+            + "Do not repeat the question. Do not explain. Do not output hexadecimal codes. "
+            + "Do not output words before or after the semantic code."
         )
     return (
         f"### Instruction:\n{instruction.strip()}\n\n"
@@ -35,10 +49,14 @@ def parse_args():
     parser.add_argument("--report-to", default="none", help="Training report target, e.g. none or wandb")
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "bfloat16", "float16", "float32"])
     parser.add_argument("--local-files-only", action="store_true", help="Only load local model/tokenizer files")
-    parser.add_argument("--strict-sid-output", action="store_true", help="Append strict formatting instructions for SID-only output")
+    parser.add_argument(
+        "--strict-sid-output",
+        action="store_true",
+        help="Append strict formatting instructions for SID-only output",
+    )
     parser.add_argument(
         "--target-modules",
-        default="embed_tokens",
+        default=DEFAULT_TARGET_MODULES,
         help="Comma-separated LoRA target modules, e.g. embed_tokens,q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
     )
     return parser.parse_args()
@@ -54,6 +72,17 @@ def parse_target_modules(raw_value):
     return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
+def build_record(example, strict_sid_output):
+    prompt = build_prompt(example["instruction"], example["input"], strict_sid_output)
+    completion = example["output"].strip()
+    if strict_sid_output and "semantic code" in example["instruction"].lower():
+        completion = completion.replace(" ", "")
+    return {
+        "prompt": prompt,
+        "completion": completion + "<|eot_id|>",
+    }
+
+
 def train(args):
     import torch
     from datasets import load_dataset
@@ -67,17 +96,11 @@ def train(args):
     train_data = load_dataset("json", data_files=args.train_dataset)["train"]
     val_data = load_dataset("json", data_files=args.valid_dataset)["train"]
     train_data = train_data.map(
-        lambda example: {
-            "prompt": build_prompt(example["instruction"], example["input"], args.strict_sid_output),
-            "completion": example["output"].strip() + "<|eot_id|>",
-        },
+        lambda example: build_record(example, args.strict_sid_output),
         remove_columns=train_data.column_names,
     )
     val_data = val_data.map(
-        lambda example: {
-            "prompt": build_prompt(example["instruction"], example["input"], args.strict_sid_output),
-            "completion": example["output"].strip() + "<|eot_id|>",
-        },
+        lambda example: build_record(example, args.strict_sid_output),
         remove_columns=val_data.column_names,
     )
 

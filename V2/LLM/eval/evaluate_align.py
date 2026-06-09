@@ -63,6 +63,13 @@ def parse_sid(text: str) -> List[Tuple[str, int]]:
     return [(letter, int(value)) for letter, value in SID_PATTERN.findall(text)]
 
 
+def extract_first_sid(text: str) -> str:
+    matches = SID_PATTERN.findall(text)
+    if not matches:
+        return ""
+    return "".join(f"<{letter}_{value}>" for letter, value in matches)
+
+
 def is_valid_sid(text: str) -> bool:
     cleaned = text.strip()
     matches = SID_PATTERN.findall(cleaned)
@@ -197,6 +204,7 @@ def main():
             generated_ids = generated[idx][prompt_lengths[idx]:]
             pred_text = tokenizer.decode(generated_ids, skip_special_tokens=False).strip()
             gold_text = record["output"].strip()
+            extracted_sid = extract_first_sid(pred_text)
             predictions.append(
                 {
                     "task_type": record["task_type"],
@@ -204,6 +212,7 @@ def main():
                     "input": record["input"],
                     "gold_output": gold_text,
                     "pred_output": pred_text,
+                    "extracted_sid": extracted_sid,
                     "is_exact_match": normalize_text(pred_text) == normalize_text(gold_text),
                 }
             )
@@ -221,11 +230,16 @@ def main():
     if attr_preds:
         metrics["attr_to_sid_exact_match"] = sum(p["is_exact_match"] for p in attr_preds) / len(attr_preds)
         metrics["valid_sid_rate"] = sum(is_valid_sid(p["pred_output"]) for p in attr_preds) / len(attr_preds)
+        metrics["extractable_sid_rate"] = sum(bool(p["extracted_sid"]) for p in attr_preds) / len(attr_preds)
+        metrics["extracted_sid_exact_match"] = (
+            sum(p["extracted_sid"] == p["gold_output"] for p in attr_preds) / len(attr_preds)
+        )
 
         component_hits = {}
         component_counts = {}
         for pred in attr_preds:
-            scores = sid_component_scores(pred["gold_output"], pred["pred_output"])
+            sid_for_score = pred["pred_output"] if is_valid_sid(pred["pred_output"]) else pred["extracted_sid"]
+            scores = sid_component_scores(pred["gold_output"], sid_for_score)
             for label, score in scores.items():
                 component_hits[label] = component_hits.get(label, 0.0) + (score or 0.0)
                 component_counts[label] = component_counts.get(label, 0) + 1
