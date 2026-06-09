@@ -161,10 +161,6 @@ def main(csv_path, category_pkl, cf_pkl, output_dir):
     print(f"Done! Results saved to {output_path}")
 
 if __name__ == "__main__":
-    datafold = ''  
-    path = f""
-    if not os.path.exists(path):
-        os.makedirs(path)
     parser = argparse.ArgumentParser(description="Build POI semantic vectors for similarity-based RQ-VAE")
     parser.add_argument("--csv_path", default=f"", help="Path to POI CSV file")
     parser.add_argument("--category_pkl", default=f"", help="Path to category_to_embedding.pkl")
